@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Support\DuckDB;
 use App\Jobs\CreateOsintCapsule;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
@@ -170,9 +171,8 @@ class IngestionTest extends TestCase
      */
     private function duckDbJson(string $dbPath, string $sql): array
     {
-        $result = Process::timeout(10)
-            ->env(['HOME' => getenv('HOME') ?: base_path()])
-            ->run(['duckdb', '-json', '-readonly', $dbPath, '-c', $sql]);
+        $result = DuckDB::process(10)
+            ->run([DuckDB::binary(), '-json', '-readonly', $dbPath, '-c', DuckDB::preamble().' '.$sql]);
 
         $this->assertTrue($result->successful(), $result->errorOutput());
 

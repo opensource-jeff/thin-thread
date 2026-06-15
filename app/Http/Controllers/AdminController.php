@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Support\DuckDB;
 use App\Jobs\CreateOsintCapsule;
 use App\Models\User;
 use App\Support\CapsuleRetentionPolicy;
@@ -223,7 +224,9 @@ class AdminController extends Controller
      */
     private function readCapsuleMetadata(SplFileInfo $file): ?array
     {
-        $sql = <<<'SQL'
+        $preamble = DuckDB::preamble();
+        $sql = <<<SQL
+{$preamble}
 SELECT
     display_name,
     CAST(leak_date AS VARCHAR) AS leak_date,
@@ -237,9 +240,8 @@ FROM meta
 LIMIT 1;
 SQL;
 
-        $result = Process::timeout(10)
-            ->env($this->duckDbEnvironment())
-            ->run(['duckdb', '-json', '-readonly', $file->getPathname(), '-c', $sql]);
+        $result = DuckDB::process(10)
+            ->run([DuckDB::binary(), '-json', '-readonly', $file->getPathname(), '-c', $sql]);
 
         if (! $result->successful()) {
             return null;
@@ -328,19 +330,5 @@ SQL;
             ? "{$bytes} {$units[$unit]}"
             : number_format($size, 1).' '.$units[$unit];
     }
-
-    /**
-     * @return array<string, string>
-     */
-    private function duckDbEnvironment(): array
-    {
-        $home = getenv('HOME') ?: ($_SERVER['HOME'] ?? null);
-
-        if (! $home && function_exists('posix_getpwuid') && function_exists('posix_geteuid')) {
-            $user = posix_getpwuid(posix_geteuid());
-            $home = is_array($user) ? ($user['dir'] ?? null) : null;
-        }
-
-        return ['HOME' => $home ?: base_path()];
-    }
 }
+

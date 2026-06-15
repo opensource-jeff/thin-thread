@@ -180,19 +180,24 @@ When adding UI:
 
 ## DuckDB Process Calls
 
-The app invokes DuckDB through Laravel's `Process` facade.
+The app invokes DuckDB through the `App\Support\DuckDB` helper class, which wraps Laravel's `Process` facade with the correct environment settings.
 
 Preferred pattern:
 
 ```php
-Process::timeout(60)
-    ->env($this->duckDbEnvironment())
-    ->run(['duckdb', '-json', '-readonly', $path, '-c', $sql]);
+use App\Support\DuckDB;
+
+$result = DuckDB::process(60)
+    ->run([DuckDB::binary(), '-json', '-readonly', $path, '-c', DuckDB::preamble() . ' ' . $sql]);
 ```
 
 Use argument arrays instead of shell strings. This avoids quoting bugs and shell injection risk.
 
-Set `HOME` when loading DuckDB extensions. Web and queue processes may not inherit the expected `HOME`.
+The `DuckDB` class handles:
+
+- Setting `HOME` to ensure extensions (like `fts`) load correctly.
+- Setting `PRAGMA temp_directory` via `DuckDB::preamble()` to avoid `/tmp` restrictions.
+- Allowing `DUCKDB_HOME` and `DUCKDB_BINARY` overrides in `.env`.
 
 For write operations, use `-bail` where appropriate so DuckDB exits on the first SQL error.
 
