@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Support\DuckDB;
 use App\Support\CapsuleRetentionPolicy;
 use Carbon\CarbonImmutable;
 use Illuminate\Bus\Queueable;
@@ -69,8 +70,11 @@ class CreateOsintCapsule implements ShouldQueue
             ? "INSERT INTO raw_data SELECT column0 FROM read_csv({$importPathSql}, delim=',', quote='\"', escape='\"', header=False, columns={'column0': 'VARCHAR'}, ignore_errors=False, auto_detect=False);"
             : '-- Source file contained no rows.';
 
+        $preamble = DuckDB::preamble();
+
         // Prepare SQL script
         $sql = <<<SQL
+        {$preamble}
         PRAGMA memory_limit='5GB';
         PRAGMA threads=4;
 
@@ -99,9 +103,8 @@ class CreateOsintCapsule implements ShouldQueue
         File::put($sqlPath, $sql);
 
         // Run DuckDB CLI
-        $result = Process::timeout($this->timeout)
-            ->env($this->duckDbEnvironment())
-            ->run(['duckdb', '-bail', $capsulePath, '-f', $sqlPath]);
+        $result = DuckDB::process($this->timeout)
+            ->run([DuckDB::binary(), '-bail', $capsulePath, '-f', $sqlPath]);
 
         if ($result->successful()) {
             // Only delete the source file if it's in our temporary/upload directory
@@ -170,22 +173,5 @@ class CreateOsintCapsule implements ShouldQueue
     {
         return "'".str_replace("'", "''", $value)."'";
     }
-
-    /**
-     * DuckDB looks for installed extensions under HOME; web/queue workers often
-     * run without it, which makes LOAD fts fail against /.duckdb.
-     *
-     * @return array<string, string>
-     */
-    private function duckDbEnvironment(): array
-    {
-        $home = getenv('HOME') ?: ($_SERVER['HOME'] ?? null);
-
-        if (! $home && function_exists('posix_getpwuid') && function_exists('posix_geteuid')) {
-            $user = posix_getpwuid(posix_geteuid());
-            $home = is_array($user) ? ($user['dir'] ?? null) : null;
-        }
-
-        return ['HOME' => $home ?: base_path()];
-    }
 }
+

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Support\DuckDB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
@@ -57,10 +58,9 @@ class SearchController extends Controller
                 flush();
 
                 // 1. Fetch Metadata First
-                $metaSql = 'SELECT display_name, CAST(leak_date AS VARCHAR) as info1, CAST(total_lines AS VARCHAR) as info2 FROM meta LIMIT 1';
-                $metaProcess = Process::timeout(10)
-                    ->env($this->duckDbEnvironment())
-                    ->run(['duckdb', '-json', '-readonly', $path, '-c', $metaSql]);
+                $metaSql = DuckDB::preamble().' SELECT display_name, CAST(leak_date AS VARCHAR) as info1, CAST(total_lines AS VARCHAR) as info2 FROM meta LIMIT 1';
+                $metaProcess = DuckDB::process(10)
+                    ->run([DuckDB::binary(), '-json', '-readonly', $path, '-c', $metaSql]);
 
                 $meta = null;
                 if ($metaProcess->successful()) {
@@ -81,16 +81,14 @@ class SearchController extends Controller
                 }
 
                 // 2. Stream Hits Individually
-                $process = Process::timeout(60)
-                    ->env($this->duckDbEnvironment())
-                    ->run(['duckdb', '-json', '-readonly', $path, '-c', $searchSql]);
+                $process = DuckDB::process(60)
+                    ->run([DuckDB::binary(), '-json', '-readonly', $path, '-c', $searchSql]);
 
                 if (! $process->successful() && $searchSql !== $fallbackSql) {
                     Log::warning("DuckDB FTS Search Failed on {$filename}; falling back to exact scan: ".$process->errorOutput());
 
-                    $process = Process::timeout(60)
-                        ->env($this->duckDbEnvironment())
-                        ->run(['duckdb', '-json', '-readonly', $path, '-c', $fallbackSql]);
+                    $process = DuckDB::process(60)
+                        ->run([DuckDB::binary(), '-json', '-readonly', $path, '-c', $fallbackSql]);
                 }
 
                 if ($process->successful()) {
@@ -140,8 +138,10 @@ class SearchController extends Controller
         $ftsQuery = $this->sqlString(implode(' ', $tokens));
         $filters = $this->tokenFilters($tokens);
         $where = implode(' AND ', array_merge(['score IS NOT NULL'], $filters));
+        $preamble = DuckDB::preamble();
 
         return <<<SQL
+{$preamble}
 LOAD fts;
 SELECT raw_text FROM (
     SELECT raw_text, fts_main_raw_data.match_bm25(raw_text, {$ftsQuery}) AS score
@@ -164,7 +164,10 @@ SQL;
                 : implode(' AND ', $filters);
         }
 
+        $preamble = DuckDB::preamble();
+
         return <<<SQL
+{$preamble}
 SELECT raw_text
 FROM raw_data
 WHERE {$where}
@@ -205,19 +208,5 @@ SQL;
     {
         return "'".str_replace("'", "''", $value)."'";
     }
-
-    /**
-     * @return array<string, string>
-     */
-    private function duckDbEnvironment(): array
-    {
-        $home = getenv('HOME') ?: ($_SERVER['HOME'] ?? null);
-
-        if (! $home && function_exists('posix_getpwuid') && function_exists('posix_geteuid')) {
-            $user = posix_getpwuid(posix_geteuid());
-            $home = is_array($user) ? ($user['dir'] ?? null) : null;
-        }
-
-        return ['HOME' => $home ?: base_path()];
-    }
 }
+

@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Support\DuckDB;
 use Carbon\CarbonImmutable;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\File;
@@ -108,7 +109,9 @@ class PruneExpiredCapsules extends Command
      */
     private function readRetentionMetadata(SplFileInfo $file): ?array
     {
-        $sql = <<<'SQL'
+        $preamble = DuckDB::preamble();
+        $sql = <<<SQL
+{$preamble}
 SELECT
     display_name,
     retention_policy,
@@ -118,10 +121,11 @@ FROM meta
 LIMIT 1;
 SQL;
 
-        $result = Process::timeout(20)->run([
-            'duckdb',
+        $result = DuckDB::process(20)->run([
+            DuckDB::binary(),
             '-json',
             $file->getPathname(),
+            '-c',
             $sql,
         ]);
 
@@ -142,3 +146,4 @@ SQL;
         return $rows[0] ?? null;
     }
 }
+
