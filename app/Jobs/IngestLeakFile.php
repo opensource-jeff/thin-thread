@@ -39,40 +39,29 @@ class IngestLeakFile implements ShouldQueue
     ) {}
 
     /**
+     * The number of lines per file chunk.
+     */
+    const CHUNK_SIZE = 1000000;
+
+    /**
      * Execute the job.
      */
     public function handle(): void
     {
-        $uuid = (string) Str::uuid();
         $leakDir = QGrep::storagePath();
         File::ensureDirectoryExists($leakDir);
 
-        $normalizedPath = "{$leakDir}/leak_{$uuid}.txt";
         $ingestedAt = CarbonImmutable::now('UTC');
         $expiresAt = CapsuleRetentionPolicy::expiresAt($this->retentionPolicy, $ingestedAt);
 
-        $lineCount = $this->writeNormalizedFile($this->filePath, $normalizedPath);
+        $chunks = $this->processAndChunkFile($this->filePath, $leakDir, $ingestedAt, $expiresAt);
 
-        if ($lineCount === 0) {
-            File::delete($normalizedPath);
-            Log::warning("Ingestion skipped: Source file contained no rows for {$this->displayName}");
+        if (count($chunks) === 0) {
+            Log::warning("Ingestion skipped: No data found in {$this->displayName}");
             return;
         }
 
-        // 1. Store metadata in MariaDB
-        Leak::create([
-            'display_name' => $this->displayName,
-            'file_path' => $normalizedPath,
-            'leak_date' => $this->leakDate,
-            'data_format' => $this->dataFormat,
-            'retention_policy' => $this->retentionPolicy,
-            'retention_label' => CapsuleRetentionPolicy::label($this->retentionPolicy),
-            'retention_expires_at' => $expiresAt,
-            'ingested_at' => $ingestedAt,
-            'total_lines' => $lineCount,
-        ]);
-
-        // 2. Trigger qgrep indexing
+        // 2. Trigger qgrep indexing once for all chunks
         $this->updateQGrepIndex();
 
         // 3. Cleanup source if needed
@@ -81,8 +70,78 @@ class IngestLeakFile implements ShouldQueue
         }
 
         Log::info("Leak Ingestion Successful: {$this->displayName}", [
-            'file' => basename($normalizedPath),
-            'rows' => $lineCount,
+            'chunks' => count($chunks),
+            'total_rows' => array_sum(array_column($chunks, 'total_lines')),
+        ]);
+    }
+
+    private function processAndChunkFile(string $sourcePath, string $leakDir, $ingestedAt, $expiresAt): array
+    {
+        $source = fopen($sourcePath, 'rb');
+        if ($source === false) {
+            throw new RuntimeException("Unable to open source file: {$sourcePath}");
+        }
+
+        $previousSubstitute = mb_substitute_character();
+        mb_substitute_character('none');
+
+        $chunks = [];
+        $currentChunkLines = 0;
+        $totalLines = 0;
+        $currentTarget = null;
+        $currentPath = null;
+
+        try {
+            while (($line = fgets($source)) !== false) {
+                if ($currentTarget === null || $currentChunkLines >= self::CHUNK_SIZE) {
+                    // Close previous chunk
+                    if ($currentTarget) {
+                        fclose($currentTarget);
+                        $chunks[] = $this->registerChunk($currentPath, $currentChunkLines, $ingestedAt, $expiresAt);
+                    }
+
+                    // Open new chunk
+                    $uuid = (string) Str::uuid();
+                    $currentPath = "{$leakDir}/leak_{$uuid}.txt";
+                    $currentTarget = fopen($currentPath, 'wb');
+                    $currentChunkLines = 0;
+                }
+
+                $line = rtrim($line, "\r\n");
+                $line = mb_convert_encoding($line, 'UTF-8', 'UTF-8');
+                $line = preg_replace('/[\x00-\x1F\x7F]+/', ' ', $line) ?? '';
+                $line = mb_strtolower($line, 'UTF-8');
+
+                fwrite($currentTarget, $line . "\n");
+                $currentChunkLines++;
+                $totalLines++;
+            }
+
+            // Close the final chunk
+            if ($currentTarget) {
+                fclose($currentTarget);
+                $chunks[] = $this->registerChunk($currentPath, $currentChunkLines, $ingestedAt, $expiresAt);
+            }
+        } finally {
+            mb_substitute_character($previousSubstitute);
+            fclose($source);
+        }
+
+        return $chunks;
+    }
+
+    private function registerChunk(string $path, int $lineCount, $ingestedAt, $expiresAt): Leak
+    {
+        return Leak::create([
+            'display_name' => $this->displayName,
+            'file_path' => $path,
+            'leak_date' => $this->leakDate,
+            'data_format' => $this->dataFormat,
+            'retention_policy' => $this->retentionPolicy,
+            'retention_label' => CapsuleRetentionPolicy::label($this->retentionPolicy),
+            'retention_expires_at' => $expiresAt,
+            'ingested_at' => $ingestedAt,
+            'total_lines' => $lineCount,
         ]);
     }
 
@@ -101,46 +160,6 @@ class IngestLeakFile implements ShouldQueue
             ]);
             throw new RuntimeException('qgrep Indexing Failed: '.$result->errorOutput());
         }
-    }
-
-    private function writeNormalizedFile(string $sourcePath, string $targetPath): int
-    {
-        $source = fopen($sourcePath, 'rb');
-        if ($source === false) {
-            throw new RuntimeException("Unable to open source file: {$sourcePath}");
-        }
-
-        $target = fopen($targetPath, 'wb');
-        if ($target === false) {
-            fclose($source);
-            throw new RuntimeException("Unable to create target file: {$targetPath}");
-        }
-
-        $previousSubstitute = mb_substitute_character();
-        mb_substitute_character('none');
-
-        $lineCount = 0;
-
-        try {
-            while (($line = fgets($source)) !== false) {
-                $line = rtrim($line, "\r\n");
-                $line = mb_convert_encoding($line, 'UTF-8', 'UTF-8');
-                $line = preg_replace('/[\x00-\x1F\x7F]+/', ' ', $line) ?? '';
-                $line = mb_strtolower($line, 'UTF-8');
-
-                if (fwrite($target, $line . "\n") === false) {
-                    throw new RuntimeException("Unable to write row for: {$sourcePath}");
-                }
-
-                $lineCount++;
-            }
-        } finally {
-            mb_substitute_character($previousSubstitute);
-            fclose($source);
-            fclose($target);
-        }
-
-        return $lineCount;
     }
 }
 
