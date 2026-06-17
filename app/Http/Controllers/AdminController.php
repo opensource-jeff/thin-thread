@@ -244,6 +244,7 @@ SQL;
             ->run([DuckDB::binary(), '-json', '-readonly', $file->getPathname(), '-c', $sql]);
 
         if (! $result->successful()) {
+            Log::error("DuckDB Metadata Read Failed for {$file->getFilename()}: " . $result->errorOutput());
             return null;
         }
 

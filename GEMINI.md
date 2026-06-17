@@ -34,26 +34,33 @@ php artisan osint:ingest /path/to/leak.txt "Target Breach" "2024-06-10" "JSON"
 
 ## Setup Instructions
 
-1. **Permissions:**
-   Ensure the capsule directory is writable:
-   ```bash
-   mkdir -p storage/app/osint_capsules
-   chmod -R 775 storage/app/osint_capsules
+1. **Environment Configuration:**
+   In restricted production environments, you may need to specify the path to DuckDB and a valid HOME directory in your `.env`:
+   ```env
+   DUCKDB_BINARY=/usr/bin/duckdb
+   DUCKDB_HOME=/home/user
    ```
 
-2. **Database:**
+2. **Permissions:**
+   Ensure the capsule and temp directories are writable:
+   ```bash
+   mkdir -p storage/app/osint_capsules storage/app/duckdb_tmp
+   chmod -R 775 storage/app/osint_capsules storage/app/duckdb_tmp
+   ```
+
+3. **Database:**
    Ensure MariaDB is running and the database `thin_thread` exists. Run migrations:
    ```bash
    php artisan migrate --seed
    ```
 
-3. **Queue Worker:**
+4. **Queue Worker:**
    Start the queue worker to process ingestion jobs:
    ```bash
    php artisan queue:work --timeout=86400
    ```
 
-4. **Web Server:**
+5. **Web Server:**
    Start the Laravel server:
    ```bash
    php artisan serve
@@ -61,5 +68,6 @@ php artisan osint:ingest /path/to/leak.txt "Target Breach" "2024-06-10" "JSON"
 
 ## Optimization Parameters
 - **Memory:** Limited to 5GB during ingestion to fit within the 8GB RAM profile.
-- **I/O:** Sequential processing of capsules during search to avoid SATA I/O thrashing.
+- **I/I/O:** Sequential processing of capsules during search to avoid SATA I/O thrashing.
+- **Temporary Storage:** DuckDB uses `storage/app/duckdb_tmp` to avoid system `/tmp` restrictions.
 - **FTS:** Custom regex `[^\p{L}0-9@.+\-_]` ensures international names and email formats are indexed correctly.

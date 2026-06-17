@@ -61,6 +61,7 @@ class DuckDB
             File::makeDirectory($tempDir, 0775, true);
         }
 
-        return "PRAGMA temp_directory='{$tempDir}';";
+        // Conservative defaults for shared/restricted environments
+        return "PRAGMA temp_directory='{$tempDir}'; PRAGMA threads=1; PRAGMA memory_limit='2GB';";
     }
 }

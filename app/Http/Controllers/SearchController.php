@@ -24,6 +24,8 @@ class SearchController extends Controller
      */
     public function stream(Request $request)
     {
+        set_time_limit(0);
+
         $query = trim((string) $request->input('q', ''));
         if ($query === '') {
             return response()->stream(function () {
@@ -48,67 +50,71 @@ class SearchController extends Controller
 
         return new StreamedResponse(function () use ($dbFiles, $searchSql, $fallbackSql) {
             foreach ($dbFiles as $dbFile) {
-                $path = $dbFile->getRealPath();
-                $filename = basename($path);
+                try {
+                    $path = $dbFile->getRealPath();
+                    $filename = basename($path);
 
-                echo "event: ping\ndata: ".json_encode(['capsule' => $filename])."\n\n";
-                if (ob_get_level() > 0) {
-                    ob_flush();
-                }
-                flush();
-
-                // 1. Fetch Metadata First
-                $metaSql = DuckDB::preamble().' SELECT display_name, CAST(leak_date AS VARCHAR) as info1, CAST(total_lines AS VARCHAR) as info2 FROM meta LIMIT 1';
-                $metaProcess = DuckDB::process(10)
-                    ->run([DuckDB::binary(), '-json', '-readonly', $path, '-c', $metaSql]);
-
-                $meta = null;
-                if ($metaProcess->successful()) {
-                    $metaOutput = json_decode($metaProcess->output(), true);
-                    if (! empty($metaOutput[0])) {
-                        $meta = [
-                            'display_name' => $metaOutput[0]['display_name'],
-                            'leak_date' => $metaOutput[0]['info1'],
-                            'total_lines' => $metaOutput[0]['info2'],
-                            'capsule' => $filename,
-                        ];
-                        echo "event: meta\ndata: ".json_encode($meta)."\n\n";
-                        if (ob_get_level() > 0) {
-                            ob_flush();
-                        }
-                        flush();
+                    echo "event: ping\ndata: ".json_encode(['capsule' => $filename])."\n\n";
+                    if (ob_get_level() > 0) {
+                        ob_flush();
                     }
-                }
+                    flush();
 
-                // 2. Stream Hits Individually
-                $process = DuckDB::process(60)
-                    ->run([DuckDB::binary(), '-json', '-readonly', $path, '-c', $searchSql]);
+                    // 1. Fetch Metadata First
+                    $metaSql = DuckDB::preamble().' SELECT display_name, CAST(leak_date AS VARCHAR) as info1, CAST(total_lines AS VARCHAR) as info2 FROM meta LIMIT 1';
+                    $metaProcess = DuckDB::process(10)
+                        ->run([DuckDB::binary(), '-json', '-readonly', $path, '-c', $metaSql]);
 
-                if (! $process->successful() && $searchSql !== $fallbackSql) {
-                    Log::warning("DuckDB FTS Search Failed on {$filename}; falling back to exact scan: ".$process->errorOutput());
-
-                    $process = DuckDB::process(60)
-                        ->run([DuckDB::binary(), '-json', '-readonly', $path, '-c', $fallbackSql]);
-                }
-
-                if ($process->successful()) {
-                    $output = json_decode($process->output(), true);
-                    if ($output) {
-                        foreach ($output as $row) {
-                            $hit = preg_replace('/[[:cntrl:]]/', '', $row['raw_text']);
-                            echo "event: hit\ndata: ".json_encode([
+                    $meta = null;
+                    if ($metaProcess->successful()) {
+                        $metaOutput = json_decode($metaProcess->output(), true);
+                        if (! empty($metaOutput[0])) {
+                            $meta = [
+                                'display_name' => $metaOutput[0]['display_name'],
+                                'leak_date' => $metaOutput[0]['info1'],
+                                'total_lines' => $metaOutput[0]['info2'],
                                 'capsule' => $filename,
-                                'text' => $hit,
-                            ], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE)."\n\n";
-
+                            ];
+                            echo "event: meta\ndata: ".json_encode($meta)."\n\n";
                             if (ob_get_level() > 0) {
                                 ob_flush();
                             }
                             flush();
                         }
                     }
-                } else {
-                    Log::error("DuckDB Search Failed on {$filename}: ".$process->errorOutput());
+
+                    // 2. Stream Hits Individually
+                    $process = DuckDB::process(60)
+                        ->run([DuckDB::binary(), '-json', '-readonly', $path, '-c', $searchSql]);
+
+                    if (! $process->successful() && $searchSql !== $fallbackSql) {
+                        Log::warning("DuckDB FTS Search Failed on {$filename}; falling back to exact scan: ".$process->errorOutput());
+
+                        $process = DuckDB::process(60)
+                            ->run([DuckDB::binary(), '-json', '-readonly', $path, '-c', $fallbackSql]);
+                    }
+
+                    if ($process->successful()) {
+                        $output = json_decode($process->output(), true);
+                        if ($output) {
+                            foreach ($output as $row) {
+                                $hit = preg_replace('/[[:cntrl:]]/', '', $row['raw_text']);
+                                echo "event: hit\ndata: ".json_encode([
+                                    'capsule' => $filename,
+                                    'text' => $hit,
+                                ], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE)."\n\n";
+
+                                if (ob_get_level() > 0) {
+                                    ob_flush();
+                                }
+                                flush();
+                            }
+                        }
+                    } else {
+                        Log::error("DuckDB Search Failed on {$filename}: ".$process->errorOutput());
+                    }
+                } catch (\Exception $e) {
+                    Log::error("Search interrupted on capsule {$filename}: " . $e->getMessage());
                 }
             }
             echo "event: done\ndata: end\n\n";
