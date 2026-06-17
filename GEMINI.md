@@ -1,43 +1,31 @@
-# OSINT Search Engine (qgrep Architecture)
+# OSINT Search Engine (Manual qgrep Architecture)
 
 ## Architecture Overview
-This application is designed for high-performance OSINT search on restricted hardware. It uses **qgrep** for fast full-text searching across normalized text files.
+This application uses **qgrep** for high-speed searching across normalized text files, with metadata tracked in MariaDB.
 
 - **Database:** MariaDB stores users, Laravel metadata, and **Leak metadata**.
-- **Authentication:** Mandatory login enforced for all search and admin routes.
+- **Search Command:** Configurable via `.env`. By default, it runs against a manually managed qgrep project named `osint_leaks`.
 - **Leak Files:** Each uploaded leak is stored as a normalized `.txt` file in `storage/app/osint_leaks/`.
-- **Ingestion:** Performed via background jobs that normalize text, store metadata in MariaDB, and update the qgrep index (`storage/app/qgrep_index/leaks.qf`).
-- **Search:** The `SearchController` executes `qgrep search` against the unified index and joins results with MariaDB metadata for real-time streaming to the analyst.
+- **Ingestion:** Background jobs normalize text, split them into chunks, and store metadata in MariaDB.
+- **Indexing:** **Manual management.** The administrator must run `qgrep index` manually on the server after ingestion to update the searchable data.
 
 ## Key Components
 
 ### 1. Ingestion Job (`App\Jobs\IngestLeakFile`)
-- **Timeout:** 24 hours.
-- **Normalisation:** All text is converted to lowercase, UTF-8 encoded, and stripped of control characters.
-- **Indexing:** Triggers `qgrep index` to rebuild the searchable index.
+- **Normalization:** Converts text to lowercase and strips control characters.
+- **Chunking:** Splits large leaks into 1,000,000-line chunks for optimal qgrep performance.
+- **Metadata:** Creates records in MariaDB for every chunk to enable UI grouping.
 
 ### 2. Search Controller (`App\Http\Controllers\SearchController`)
-- **qgrep Search:** Uses `qgrep` for high-speed regex-based search across all ingested files.
-- **Metadata Join:** Fetches display names and leak info from MariaDB based on file paths returned by qgrep.
-- **Streaming:** Uses Server-Sent Events (SSE) to push results to the UI as they are found.
-
-### 3. Authentication & Access Control
-- **Login:** Handled via `Auth\LoginController`.
-- **Middleware:** `auth` middleware protects all routes.
-- **Session:** Configured to `database` driver (MariaDB).
-
-### 4. CLI Command
-Manually trigger ingestion from the terminal:
-```bash
-php artisan osint:ingest /path/to/leak.txt "Target Breach" "2024-06-10" "JSON"
-```
+- **Configurable Command:** Executes the search command defined in `QGREP_SEARCH_COMMAND`.
+- **Metadata Join:** Maps file paths returned by qgrep to MariaDB records to display human-friendly leak names.
 
 ## Setup Instructions
 
 1. **Environment Configuration:**
-   Specify the path to qgrep in your `.env`:
+   Add the search command to your `.env`:
    ```env
-   QGREP_BINARY=/usr/bin/qgrep
+   QGREP_SEARCH_COMMAND="qgrep search osint_leaks {query}"
    ```
 
 2. **Permissions:**
@@ -47,26 +35,26 @@ php artisan osint:ingest /path/to/leak.txt "Target Breach" "2024-06-10" "JSON"
    chmod -R 775 storage/app/osint_leaks storage/app/qgrep_index
    ```
 
-3. **Database:**
+3. **Manual Indexing:**
+   After ingesting new leaks, run the following command on the server:
+   ```bash
+   qgrep index osint_leaks storage/app/osint_leaks/
+   ```
+
+4. **Database:**
    Ensure MariaDB is running and the database `thin_thread` exists. Run migrations:
    ```bash
    php artisan migrate --seed
    ```
 
-4. **Queue Worker:**
+5. **Queue Worker:**
    Start the queue worker to process ingestion jobs:
    ```bash
    php artisan queue:work --timeout=86400
    ```
 
-5. **Web Server:**
+6. **Web Server:**
    Start the Laravel server:
    ```bash
    php artisan serve
    ```
-
-## Optimization Parameters
-- **qgrep Index:** Fast bitset-based searching avoids sequential file scans.
-- **Metadata Cache:** `SearchController` caches metadata lookups per-request to minimize database load during high-volume streaming.
-- **Normalisation:** Aggressive pre-processing ensures consistent search hits across international data.
-

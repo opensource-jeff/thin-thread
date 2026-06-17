@@ -17,10 +17,13 @@ class AdminController extends Controller
     /**
      * Display the admin dashboard.
      */
-    public function index()
+    public function index(Request $request)
     {
+        $search = $request->input('search');
+
         return view('admin', [
-            'capsules' => $this->leaks(),
+            'capsules' => $this->leaks($search),
+            'search' => $search,
             'retentionPolicies' => CapsuleRetentionPolicy::options(),
             'users' => User::query()
                 ->orderByDesc('is_admin')
@@ -105,9 +108,6 @@ class AdminController extends Controller
 
         $leak->delete();
 
-        // Trigger qgrep re-indexing
-        $this->updateQGrepIndex();
-
         Log::warning('Leak deleted by admin.', [
             'display_name' => $displayName,
             'file' => basename($path),
@@ -115,16 +115,6 @@ class AdminController extends Controller
         ]);
 
         return back()->with('status', "Deleted leak '{$displayName}' and its associated file.");
-    }
-
-    private function updateQGrepIndex(): void
-    {
-        $indexDir = QGrep::indexPath();
-        File::ensureDirectoryExists($indexDir);
-        $indexFile = "{$indexDir}/leaks.qf";
-
-        QGrep::process(300)
-            ->run([QGrep::binary(), 'index', $indexFile, QGrep::storagePath()]);
     }
 
     /**
@@ -212,9 +202,18 @@ class AdminController extends Controller
     /**
      * @return list<array<string, mixed>>
      */
-    private function leaks(): array
+    private function leaks(?string $search = null): array
     {
-        $leaks = Leak::query()->orderByDesc('ingested_at')->get();
+        $query = Leak::query();
+
+        if ($search) {
+            $query->where(function ($q) use ($search) {
+                $q->where('display_name', 'like', "%{$search}%")
+                  ->orWhere('file_path', 'like', "%{$search}%");
+            });
+        }
+
+        $leaks = $query->orderByDesc('ingested_at')->get();
 
         return $leaks->map(function ($leak) {
             return [

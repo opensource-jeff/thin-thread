@@ -77,19 +77,19 @@
                     <div class="mt-5 grid gap-3 md:grid-cols-4">
                         <div class="thread-metric">
                             <span>Engine</span>
-                            <strong>qgrep (Indexed)</strong>
+                            <strong>Fast Text Search</strong>
                         </div>
                         <div class="thread-metric">
                             <span>Scope</span>
-                            <strong>All ingested files</strong>
+                            <strong>Global Leak Index</strong>
                         </div>
                         <div class="thread-metric">
                             <span>Mode</span>
                             <strong>Streaming results</strong>
                         </div>
                         <div class="thread-metric">
-                            <span>Limit</span>
-                            <strong>1000 hits per request</strong>
+                            <span>Backend</span>
+                            <strong>Manual Management</strong>
                         </div>
                     </div>
                 </div>

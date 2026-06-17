@@ -65,23 +65,9 @@ class PruneExpiredCapsules extends Command
             $this->warn("Deleted '{$displayName}' expired {$expiresAt->toDateTimeString()} UTC.");
         }
 
-        if ($deleted > 0) {
-            $this->updateQGrepIndex();
-        }
-
         $this->info("Expired leaks: {$expiredLeaks->count()}; deleted: {$deleted}.");
 
         return self::SUCCESS;
-    }
-
-    private function updateQGrepIndex(): void
-    {
-        $indexDir = QGrep::indexPath();
-        File::ensureDirectoryExists($indexDir);
-        $indexFile = "{$indexDir}/leaks.qf";
-
-        QGrep::process(300)
-            ->run([QGrep::binary(), 'index', $indexFile, QGrep::storagePath()]);
     }
 }
 

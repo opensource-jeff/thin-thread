@@ -167,12 +167,27 @@
             </div>
 
             <section class="mt-8">
-                <div class="mb-4 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+                <div class="mb-4 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
                     <div>
                         <p class="thread-kicker">Leak inventory</p>
                         <h2 class="mt-1 text-2xl font-bold text-white">Loaded leaks</h2>
                     </div>
-                    <div class="text-sm thread-muted">{{ count($capsules) }} leaks</div>
+                    
+                    <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
+                        <form action="{{ route('admin.index') }}" method="GET" class="relative">
+                            <input type="text" name="search" value="{{ $search }}" placeholder="Filter leaks..."
+                                   class="thread-input min-w-[240px] pr-10">
+                            <button type="submit" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white">
+                                <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                                </svg>
+                            </button>
+                        </form>
+                        @if($search)
+                            <a href="{{ route('admin.index') }}" class="thread-link text-xs">Clear</a>
+                        @endif
+                        <div class="text-sm thread-muted">{{ count($capsules) }} leaks</div>
+                    </div>
                 </div>
 
                 @if (count($capsules) === 0)

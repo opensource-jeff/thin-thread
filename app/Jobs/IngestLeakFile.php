@@ -61,8 +61,7 @@ class IngestLeakFile implements ShouldQueue
             return;
         }
 
-        // 2. Trigger qgrep indexing once for all chunks
-        $this->updateQGrepIndex();
+        // Indexing is now managed manually outside of this job.
 
         // 3. Cleanup source if needed
         if (str_starts_with($this->filePath, storage_path('app'))) {
@@ -143,23 +142,6 @@ class IngestLeakFile implements ShouldQueue
             'ingested_at' => $ingestedAt,
             'total_lines' => $lineCount,
         ]);
-    }
-
-    private function updateQGrepIndex(): void
-    {
-        $indexDir = QGrep::indexPath();
-        File::ensureDirectoryExists($indexDir);
-        $indexFile = "{$indexDir}/leaks.qf";
-
-        $result = QGrep::process($this->timeout)
-            ->run([QGrep::binary(), 'index', $indexFile, QGrep::storagePath()]);
-
-        if (! $result->successful()) {
-            Log::error("qgrep Indexing Failed", [
-                'error' => $result->errorOutput(),
-            ]);
-            throw new RuntimeException('qgrep Indexing Failed: '.$result->errorOutput());
-        }
     }
 }
 

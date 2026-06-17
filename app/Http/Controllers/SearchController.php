@@ -34,26 +34,16 @@ class SearchController extends Controller
         }
 
         $normalizedQuery = mb_strtolower($query, 'UTF-8');
+        // Escape for regex
+        $escapedQuery = preg_quote($normalizedQuery, '/');
 
-        $indexDir = QGrep::indexPath();
-        $indexFile = "{$indexDir}/leaks.qf";
+        Log::info("Search started: '{$query}' via qgrep command.");
 
-        if (! File::exists($indexFile)) {
-            Log::warning("Search failed: qgrep index not found at {$indexFile}");
-            return response()->stream(function () {
-                echo "event: done\ndata: index not ready\n\n";
-            }, 200, ['Content-Type' => 'text/event-stream']);
-        }
+        return new StreamedResponse(function () use ($escapedQuery) {
+            $process = QGrep::process(120)
+                ->start(QGrep::searchCommand($escapedQuery));
 
-        Log::info("Search started: '{$query}' via qgrep.");
-
-        return new StreamedResponse(function () use ($indexFile, $normalizedQuery) {
-            // We use a regular expression for qgrep. We need to escape special characters if they are not intended for regex.
-            // For OSINT, usually users want literal matches of emails/domains.
-            $escapedQuery = preg_quote($normalizedQuery, '/');
-
-            $process = QGrep::process(60)
-                ->start([QGrep::binary(), 'search', $indexFile, $escapedQuery]);
+            $metadataCache = [];
 
             $output = method_exists($process, 'getOutputIterator')
                 ? $process->getOutputIterator()

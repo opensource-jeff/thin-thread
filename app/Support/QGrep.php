@@ -2,17 +2,24 @@
 
 namespace App\Support;
 
-use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 
 class QGrep
 {
     /**
-     * Get the qgrep binary path.
+     * Get the search command from .env.
+     * Default to a standard qgrep search against the osint_leaks project.
      */
-    public static function binary(): string
+    public static function searchCommand(string $query): array
     {
-        return env('QGREP_BINARY', 'qgrep');
+        $command = env('QGREP_SEARCH_COMMAND', 'qgrep search osint_leaks {query}');
+        
+        // Replace the placeholder with the actual escaped query
+        $finalCommand = str_replace('{query}', $query, $command);
+
+        // Convert the string command into an array for Process::run
+        // This is a simple split, assuming the command in .env is space-separated
+        return explode(' ', $finalCommand);
     }
 
     /**
@@ -21,21 +28,5 @@ class QGrep
     public static function process(int $timeout = 60): \Illuminate\Process\PendingProcess
     {
         return Process::timeout($timeout);
-    }
-
-    /**
-     * Get the path where leak files are stored for qgrep.
-     */
-    public static function storagePath(): string
-    {
-        return storage_path('app/osint_leaks');
-    }
-
-    /**
-     * Get the path where qgrep index is stored.
-     */
-    public static function indexPath(): string
-    {
-        return storage_path('app/qgrep_index');
     }
 }
