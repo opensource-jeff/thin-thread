@@ -2,43 +2,52 @@
 
 namespace Tests\Feature;
 
-use App\Http\Controllers\AdminController;
-use Illuminate\Http\Request;
+use App\Models\Leak;
+use App\Models\User;
+use App\Support\QGrep;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Process;
 use Tests\TestCase;
 
 class AdminCapsuleDeletionTest extends TestCase
 {
-    public function test_admin_capsule_delete_removes_capsule_and_associated_local_files(): void
+    use RefreshDatabase;
+
+    public function test_admin_leak_delete_removes_record_and_file(): void
     {
-        $capsuleDir = storage_path('app/osint_capsules');
-        File::ensureDirectoryExists($capsuleDir);
+        $this->withoutMiddleware();
+        Process::fake();
+        $user = User::factory()->create(['is_admin' => true]);
+        
+        $leakDir = QGrep::storagePath();
+        File::ensureDirectoryExists($leakDir);
+        $leakFile = $leakDir . '/delete_test.txt';
+        File::put($leakFile, 'content');
 
-        $capsulePath = $capsuleDir.'/capsule_admin-delete-test.db';
-        $walPath = $capsulePath.'.wal';
-        $sqlPath = $capsuleDir.'/ingest_admin-delete-test.sql';
-        $csvPath = $capsuleDir.'/ingest_admin-delete-test.csv';
+        $leak = Leak::create([
+            'display_name' => 'Delete Test',
+            'file_path' => $leakFile,
+            'leak_date' => '2026-06-12',
+            'data_format' => 'UNSTRUCTURED',
+            'retention_policy' => 'breach',
+            'retention_label' => 'Breach',
+            'ingested_at' => now(),
+            'total_lines' => 1,
+        ]);
 
-        foreach ([$capsulePath, $walPath, $sqlPath, $csvPath] as $path) {
-            File::put($path, 'placeholder');
-        }
+        $this->assertDatabaseHas('leaks', ['id' => $leak->id]);
+        $this->assertFileExists($leakFile);
 
-        try {
-            $request = Request::create('/admin/capsules/capsule_admin-delete-test.db', 'DELETE');
-            $request->setLaravelSession(app('session.store'));
+        $response = $this->actingAs($user)
+            ->delete("/admin/capsules/{$leak->id}");
 
-            (new AdminController)->destroyCapsule($request, 'capsule_admin-delete-test.db');
+        $response->assertStatus(302);
+        $this->assertDatabaseMissing('leaks', ['id' => $leak->id]);
+        $this->assertFileDoesNotExist($leakFile);
 
-            $this->assertFileDoesNotExist($capsulePath);
-            $this->assertFileDoesNotExist($walPath);
-            $this->assertFileDoesNotExist($sqlPath);
-            $this->assertFileDoesNotExist($csvPath);
-        } finally {
-            foreach ([$capsulePath, $walPath, $sqlPath, $csvPath] as $path) {
-                if (File::exists($path)) {
-                    File::delete($path);
-                }
-            }
-        }
+        Process::assertRan(function ($process) {
+            return str_contains($process->command[1], 'index');
+        });
     }
 }

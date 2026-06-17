@@ -1,30 +1,30 @@
-# OSINT Search Engine (Capsule Architecture)
+# OSINT Search Engine (qgrep Architecture)
 
 ## Architecture Overview
-This application is designed for high-performance OSINT search on restricted hardware. It avoids a centralized database for leak data, instead using **DuckDB Capsules**.
+This application is designed for high-performance OSINT search on restricted hardware. It uses **qgrep** for fast full-text searching across normalized text files.
 
-- **Database:** MariaDB stores users and Laravel metadata.
+- **Database:** MariaDB stores users, Laravel metadata, and **Leak metadata**.
 - **Authentication:** Mandatory login enforced for all search and admin routes.
-- **DuckDB Capsules:** Each uploaded leak is a standalone `.db` file in `storage/app/osint_capsules/`.
-- **Ingestion:** Performed via background jobs invoking the DuckDB CLI with aggressive memory limits (5GB) and thread pooling (4 threads).
-- **Search:** The `SearchController` dynamically scans the capsule directory and executes CLI queries against each file, streaming results back to the analyst in real-time.
+- **Leak Files:** Each uploaded leak is stored as a normalized `.txt` file in `storage/app/osint_leaks/`.
+- **Ingestion:** Performed via background jobs that normalize text, store metadata in MariaDB, and update the qgrep index (`storage/app/qgrep_index/leaks.qf`).
+- **Search:** The `SearchController` executes `qgrep search` against the unified index and joins results with MariaDB metadata for real-time streaming to the analyst.
 
 ## Key Components
 
-### 1. Ingestion Job (`App\Jobs\CreateOsintCapsule`)
+### 1. Ingestion Job (`App\Jobs\IngestLeakFile`)
 - **Timeout:** 24 hours.
-- **Normalisation:** All text is converted to lowercase during ingestion.
-- **FTS:** Unicode-aware Full-Text Search index with no stemming or stopwords, preserving emails and special characters.
+- **Normalisation:** All text is converted to lowercase, UTF-8 encoded, and stripped of control characters.
+- **Indexing:** Triggers `qgrep index` to rebuild the searchable index.
 
 ### 2. Search Controller (`App\Http\Controllers\SearchController`)
-- **Dynamic Discovery:** No database pointers; it reads the filesystem directly.
+- **qgrep Search:** Uses `qgrep` for high-speed regex-based search across all ingested files.
+- **Metadata Join:** Fetches display names and leak info from MariaDB based on file paths returned by qgrep.
 - **Streaming:** Uses Server-Sent Events (SSE) to push results to the UI as they are found.
-- **FTS Query:** Uses `match_bm25` for relevance scoring.
 
 ### 3. Authentication & Access Control
 - **Login:** Handled via `Auth\LoginController`.
 - **Middleware:** `auth` middleware protects all routes.
-- **Session:** Configured to `file` driver for portability.
+- **Session:** Configured to `database` driver (MariaDB).
 
 ### 4. CLI Command
 Manually trigger ingestion from the terminal:
@@ -35,17 +35,16 @@ php artisan osint:ingest /path/to/leak.txt "Target Breach" "2024-06-10" "JSON"
 ## Setup Instructions
 
 1. **Environment Configuration:**
-   In restricted production environments, you may need to specify the path to DuckDB and a valid HOME directory in your `.env`:
+   Specify the path to qgrep in your `.env`:
    ```env
-   DUCKDB_BINARY=/usr/bin/duckdb
-   DUCKDB_HOME=/home/user
+   QGREP_BINARY=/usr/bin/qgrep
    ```
 
 2. **Permissions:**
-   Ensure the capsule and temp directories are writable:
+   Ensure the leak and index directories are writable:
    ```bash
-   mkdir -p storage/app/osint_capsules storage/app/duckdb_tmp
-   chmod -R 775 storage/app/osint_capsules storage/app/duckdb_tmp
+   mkdir -p storage/app/osint_leaks storage/app/qgrep_index
+   chmod -R 775 storage/app/osint_leaks storage/app/qgrep_index
    ```
 
 3. **Database:**
@@ -67,7 +66,7 @@ php artisan osint:ingest /path/to/leak.txt "Target Breach" "2024-06-10" "JSON"
    ```
 
 ## Optimization Parameters
-- **Memory:** Limited to 5GB during ingestion to fit within the 8GB RAM profile.
-- **I/I/O:** Sequential processing of capsules during search to avoid SATA I/O thrashing.
-- **Temporary Storage:** DuckDB uses `storage/app/duckdb_tmp` to avoid system `/tmp` restrictions.
-- **FTS:** Custom regex `[^\p{L}0-9@.+\-_]` ensures international names and email formats are indexed correctly.
+- **qgrep Index:** Fast bitset-based searching avoids sequential file scans.
+- **Metadata Cache:** `SearchController` caches metadata lookups per-request to minimize database load during high-volume streaming.
+- **Normalisation:** Aggressive pre-processing ensures consistent search hits across international data.
+

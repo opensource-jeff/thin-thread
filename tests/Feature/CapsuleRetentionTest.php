@@ -2,9 +2,11 @@
 
 namespace Tests\Feature;
 
-use App\Jobs\CreateOsintCapsule;
+use App\Models\Leak;
 use App\Models\User;
+use App\Jobs\IngestLeakFile;
 use App\Support\CapsuleRetentionPolicy;
+use App\Support\QGrep;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
@@ -16,11 +18,12 @@ class CapsuleRetentionTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_admin_ingest_dispatches_capsule_with_retention_policy(): void
+    public function test_admin_ingest_dispatches_leak_with_retention_policy(): void
     {
+        $this->withoutMiddleware();
         Queue::fake();
 
-        $admin = User::factory()->admin()->create();
+        $admin = User::factory()->create(['is_admin' => true]);
         $filePath = tempnam(sys_get_temp_dir(), 'thin-thread-retention-');
         file_put_contents($filePath, 'example row');
 
@@ -36,7 +39,7 @@ class CapsuleRetentionTest extends TestCase
                 ->assertRedirect()
                 ->assertSessionHasNoErrors();
 
-            Queue::assertPushed(CreateOsintCapsule::class, function (CreateOsintCapsule $job): bool {
+            Queue::assertPushed(IngestLeakFile::class, function (IngestLeakFile $job): bool {
                 return $job->retentionPolicy === CapsuleRetentionPolicy::TELEGRAM;
             });
         } finally {
@@ -44,57 +47,73 @@ class CapsuleRetentionTest extends TestCase
         }
     }
 
-    public function test_prune_command_deletes_expired_capsules(): void
+    public function test_prune_command_deletes_expired_leaks(): void
     {
+        Process::fake();
         CarbonImmutable::setTestNow(CarbonImmutable::create(2026, 6, 11, 10, 0, 0, 'UTC'));
-        Process::fake(fn () => Process::result(json_encode([[
-            'display_name' => 'Expired Stealer',
-            'retention_policy' => CapsuleRetentionPolicy::STEALER,
-            'retention_label' => 'Stealer logs',
-            'retention_expires_at' => '2026-06-10 10:00:00',
-        ]])));
+        
+        $leakFile = QGrep::storagePath() . '/expired_leak.txt';
+        File::ensureDirectoryExists(QGrep::storagePath());
+        File::put($leakFile, 'content');
 
-        $capsuleDir = storage_path('framework/testing/capsules');
-        File::ensureDirectoryExists($capsuleDir);
-        $capsulePath = $capsuleDir.'/capsule_expired.db';
-        File::put($capsulePath, 'placeholder');
+        Leak::create([
+            'display_name' => 'Expired Leak',
+            'file_path' => $leakFile,
+            'leak_date' => '2026-06-12',
+            'data_format' => 'UNSTRUCTURED',
+            'retention_policy' => CapsuleRetentionPolicy::STEALER,
+            'retention_label' => 'Stealer',
+            'retention_expires_at' => '2026-06-10 10:00:00',
+            'ingested_at' => now(),
+            'total_lines' => 1,
+        ]);
 
         try {
-            $this->artisan('capsules:prune-expired', ['--path' => $capsuleDir])
+            $this->artisan('capsules:prune-expired')
                 ->assertExitCode(0);
 
-            $this->assertFileDoesNotExist($capsulePath);
+            $this->assertDatabaseMissing('leaks', ['display_name' => 'Expired Leak']);
+            $this->assertFileDoesNotExist($leakFile);
+            
+            Process::assertRan(function ($process) {
+                return str_contains($process->command[1], 'index');
+            });
         } finally {
-            File::deleteDirectory($capsuleDir);
             CarbonImmutable::setTestNow();
+            if (File::exists($leakFile)) File::delete($leakFile);
         }
     }
 
-    public function test_prune_command_dry_run_keeps_expired_capsules(): void
+    public function test_prune_command_dry_run_keeps_expired_leaks(): void
     {
+        Process::fake();
         CarbonImmutable::setTestNow(CarbonImmutable::create(2026, 6, 11, 10, 0, 0, 'UTC'));
-        Process::fake(fn () => Process::result(json_encode([[
-            'display_name' => 'Expired ULP',
-            'retention_policy' => CapsuleRetentionPolicy::ULP_LOG,
-            'retention_label' => 'ULP logs',
-            'retention_expires_at' => '2026-06-10 10:00:00',
-        ]])));
+        
+        $leakFile = QGrep::storagePath() . '/expired_leak_dry.txt';
+        File::ensureDirectoryExists(QGrep::storagePath());
+        File::put($leakFile, 'content');
 
-        $capsuleDir = storage_path('framework/testing/capsules-dry-run');
-        File::ensureDirectoryExists($capsuleDir);
-        $capsulePath = $capsuleDir.'/capsule_expired.db';
-        File::put($capsulePath, 'placeholder');
+        Leak::create([
+            'display_name' => 'Expired Leak Dry Run',
+            'file_path' => $leakFile,
+            'leak_date' => '2026-06-12',
+            'data_format' => 'UNSTRUCTURED',
+            'retention_policy' => CapsuleRetentionPolicy::STEALER,
+            'retention_label' => 'Stealer',
+            'retention_expires_at' => '2026-06-10 10:00:00',
+            'ingested_at' => now(),
+            'total_lines' => 1,
+        ]);
 
         try {
-            $this->artisan('capsules:prune-expired', [
-                '--path' => $capsuleDir,
-                '--dry-run' => true,
-            ])->assertExitCode(0);
+            $this->artisan('capsules:prune-expired', ['--dry-run' => true])
+                ->assertExitCode(0);
 
-            $this->assertFileExists($capsulePath);
+            $this->assertDatabaseHas('leaks', ['display_name' => 'Expired Leak Dry Run']);
+            $this->assertFileExists($leakFile);
         } finally {
-            File::deleteDirectory($capsuleDir);
             CarbonImmutable::setTestNow();
+            if (File::exists($leakFile)) File::delete($leakFile);
         }
     }
 }

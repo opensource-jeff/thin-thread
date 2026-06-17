@@ -18,7 +18,7 @@
                         <span></span>
                     </div>
                     <div class="min-w-0">
-                        <p class="thread-kicker">DuckDB capsule mesh</p>
+                        <p class="thread-kicker">Leak index search</p>
                         <h1 class="mt-1 text-3xl font-bold text-white sm:text-4xl">Thin Thread</h1>
                     </div>
                 </div>
@@ -45,14 +45,14 @@
                     <div class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
                         <div>
                             <p class="thread-kicker">Search workspace</p>
-                            <h2 class="mt-1 text-2xl font-bold text-white sm:text-3xl">Federated capsule search</h2>
+                            <h2 class="mt-1 text-2xl font-bold text-white sm:text-3xl">High-performance leak search</h2>
                         </div>
                         <div class="flex flex-wrap gap-2">
                             <span class="status-pill">
                                 <span id="status">Idle</span>
                             </span>
                             <span id="counter" class="status-pill hidden text-teal-100">Hits: 0</span>
-                            <span id="capsule-counter" class="status-pill hidden">Capsules: 0</span>
+                            <span id="capsule-counter" class="status-pill hidden">Files: 0</span>
                         </div>
                     </div>
                 </div>
@@ -77,11 +77,11 @@
                     <div class="mt-5 grid gap-3 md:grid-cols-4">
                         <div class="thread-metric">
                             <span>Engine</span>
-                            <strong>DuckDB FTS</strong>
+                            <strong>qgrep (Indexed)</strong>
                         </div>
                         <div class="thread-metric">
                             <span>Scope</span>
-                            <strong>All .db capsules</strong>
+                            <strong>All ingested files</strong>
                         </div>
                         <div class="thread-metric">
                             <span>Mode</span>
@@ -89,7 +89,7 @@
                         </div>
                         <div class="thread-metric">
                             <span>Limit</span>
-                            <strong>100 hits per capsule</strong>
+                            <strong>1000 hits per request</strong>
                         </div>
                     </div>
                 </div>
@@ -107,7 +107,7 @@
                 <div id="idle-state" class="thread-panel mt-4 px-6 py-16 text-center">
                     <div class="mx-auto mb-4 h-px max-w-xs bg-gradient-to-r from-transparent via-slate-500/50 to-transparent"></div>
                     <p class="text-base font-semibold text-white">No search running</p>
-                    <p class="mt-2 text-sm thread-muted">Thin Thread is ready to scan the loaded DuckDB capsules.</p>
+                    <p class="mt-2 text-sm thread-muted">Thin Thread is ready to scan the ingested leak files via qgrep.</p>
                 </div>
 
                 <div id="results" class="mt-4 space-y-4">
@@ -117,7 +117,7 @@
                 <div id="no-results" class="thread-panel mt-4 hidden px-6 py-16 text-center">
                     <div class="mx-auto mb-4 h-px max-w-xs bg-gradient-to-r from-transparent via-teal-300/40 to-transparent"></div>
                     <p class="text-base font-semibold text-white">No matching thread found</p>
-                    <p class="mt-2 text-sm thread-muted">No loaded DuckDB capsule returned hits for this query.</p>
+                    <p class="mt-2 text-sm thread-muted">No ingested leak file returned hits for this query.</p>
                 </div>
             </section>
         </main>
@@ -152,22 +152,23 @@
             document.getElementById('counter').classList.remove('hidden');
             document.getElementById('counter').innerText = 'Hits: 0';
             document.getElementById('capsule-counter').classList.remove('hidden');
-            document.getElementById('capsule-counter').innerText = 'Capsules: 0';
+            document.getElementById('capsule-counter').innerText = 'Files: 0';
             document.getElementById('result-title').innerText = `Results for "${query}"`;
-            document.getElementById('result-subtitle').innerText = 'Streaming matching rows from DuckDB capsules';
+            document.getElementById('result-subtitle').innerText = 'Streaming matching rows from qgrep index';
             document.getElementById('result-total').innerText = '0 hits';
 
             eventSource = new EventSource(`/search/stream?q=${encodeURIComponent(query)}`);
 
             eventSource.addEventListener('ping', function(e) {
                 const data = JSON.parse(e.data);
-                capsuleCount += 1;
-                document.getElementById('capsule-counter').innerText = `Capsules: ${capsuleCount}`;
-                console.log(`Scanning capsule: ${data.capsule}`);
+                // qgrep doesn't ping per file by default in this impl, but we keep it for SSE structure
+                console.log(`Scanning leak file: ${data.capsule}`);
             });
 
             eventSource.addEventListener('meta', function(e) {
                 const data = JSON.parse(e.data);
+                capsuleCount += 1;
+                document.getElementById('capsule-counter').innerText = `Files: ${capsuleCount}`;
                 renderCapsule(data);
             });
 
@@ -193,8 +194,8 @@
             document.getElementById('loader').classList.add('hidden');
             document.getElementById('status').innerText = 'Complete';
             document.getElementById('result-subtitle').innerText = totalHits > 0
-                ? `${capsuleCount} capsules scanned`
-                : 'No capsules returned matching rows';
+                ? `${capsuleCount} sources with matches`
+                : 'No ingested files returned matching rows';
 
             if (totalHits === 0) {
                 document.getElementById('no-results').classList.remove('hidden');
@@ -212,16 +213,16 @@
             capsuleSection.id = capsuleId;
             capsuleSection.className = 'result-card thread-panel hidden'; // Hidden until first hit
 
-            const displayName = escapeHtml(data.display_name || 'Untitled capsule');
+            const displayName = escapeHtml(data.display_name || 'Untitled Leak');
             const leakDate = escapeHtml(data.leak_date || 'Unknown date');
             const totalLines = escapeHtml(data.total_lines || '0');
-            const capsuleName = escapeHtml(data.capsule || 'capsule.db');
+            const capsuleName = escapeHtml(data.capsule || 'leak.txt');
 
             capsuleSection.innerHTML = `
                 <div class="result-head px-4 py-4 sm:px-5">
                     <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                         <div class="min-w-0">
-                            <p class="thread-kicker">DuckDB capsule</p>
+                            <p class="thread-kicker">Leak File</p>
                             <h2 class="mt-1 truncate text-xl font-bold text-white">${displayName}</h2>
                         </div>
                         <div class="flex flex-wrap items-center gap-2 text-sm">

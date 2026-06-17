@@ -17,9 +17,9 @@
                     <span></span>
                 </div>
                 <div class="min-w-0">
-                    <p class="thread-kicker">Capsules and accounts</p>
+                    <p class="thread-kicker">Leaks and accounts</p>
                     <h1 class="mt-1 text-3xl font-bold text-white sm:text-4xl">Thin Thread Intelligence</h1>
-                    <p class="mt-1 text-sm thread-muted">Manage DuckDB capsule ingestion and user access.</p>
+                    <p class="mt-1 text-sm thread-muted">Manage leak ingestion and user access.</p>
                 </div>
             </div>
 
@@ -54,8 +54,8 @@
                     @csrf
 
                     <div class="mb-6">
-                        <p class="thread-kicker">Capsule ingest</p>
-                        <h2 class="mt-1 text-2xl font-bold text-white">Create DuckDB capsule</h2>
+                        <p class="thread-kicker">Leak ingest</p>
+                        <h2 class="mt-1 text-2xl font-bold text-white">Ingest leak file</h2>
                     </div>
 
                     <div class="grid gap-6">
@@ -105,14 +105,14 @@
                                 @endforeach
                             </select>
                             <p class="mt-2 text-sm thread-muted">
-                                Breach capsules are retained indefinitely. Stealer, ULP, Telegram, and scraped capsules expire after 3 months.
+                                Breach leaks are retained indefinitely. Stealer, ULP, Telegram, and scraped leaks expire after 3 months.
                             </p>
                         </div>
                     </div>
 
                     <div class="mt-8 grid gap-3 border-t border-slate-800/80 pt-6 md:grid-cols-[1fr_auto] md:items-center">
                         <div class="text-sm thread-muted">
-                            Ingestion creates a dedicated capsule, records retention metadata, and queues index compilation.
+                            Ingestion normalizes the source file, records metadata in MariaDB, and triggers qgrep indexing.
                         </div>
                         <button type="submit" class="thread-button md:w-auto">
                             Start ingest
@@ -169,15 +169,15 @@
             <section class="mt-8">
                 <div class="mb-4 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
                     <div>
-                        <p class="thread-kicker">Capsule inventory</p>
-                        <h2 class="mt-1 text-2xl font-bold text-white">Loaded capsules</h2>
+                        <p class="thread-kicker">Leak inventory</p>
+                        <h2 class="mt-1 text-2xl font-bold text-white">Loaded leaks</h2>
                     </div>
-                    <div class="text-sm thread-muted">{{ count($capsules) }} capsules</div>
+                    <div class="text-sm thread-muted">{{ count($capsules) }} leaks</div>
                 </div>
 
                 @if (count($capsules) === 0)
                     <div class="thread-panel p-5">
-                        <p class="text-sm thread-muted">No DuckDB capsules are loaded.</p>
+                        <p class="text-sm thread-muted">No leaks are loaded.</p>
                     </div>
                 @else
                     <div class="grid gap-4">
@@ -186,15 +186,15 @@
                             <div class="thread-panel p-4 sm:p-5">
                                 <div class="mb-4 flex flex-col gap-3 border-b border-slate-800/80 pb-4 lg:flex-row lg:items-start lg:justify-between">
                                     <div class="min-w-0">
-                                        <p class="thread-kicker">DuckDB capsule</p>
+                                        <p class="thread-kicker">Leak File</p>
                                         <h3 class="mt-1 truncate text-lg font-bold text-white">
-                                            {{ $metadata['display_name'] ?? 'Unreadable capsule metadata' }}
+                                            {{ $metadata['display_name'] ?? 'Unreadable metadata' }}
                                         </h3>
                                         <p class="mt-1 truncate text-sm thread-muted">{{ $capsule['filename'] }}</p>
                                     </div>
                                     <div class="flex flex-wrap gap-2 text-sm">
                                         <span class="rounded-full border border-slate-700/80 px-3 py-1 thread-muted">{{ $capsule['size'] }}</span>
-                                        <span class="rounded-full border border-slate-700/80 px-3 py-1 thread-muted">Modified {{ $capsule['modified_at'] }}</span>
+                                        <span class="rounded-full border border-slate-700/80 px-3 py-1 thread-muted">Ingested {{ $capsule['modified_at'] }}</span>
                                     </div>
                                 </div>
 
@@ -227,16 +227,16 @@
                                     </div>
                                 @else
                                     <div class="thread-alert thread-alert-error">
-                                        This capsule file exists, but its embedded metadata could not be read.
+                                        This leak file exists, but its metadata could not be found in MariaDB.
                                     </div>
                                 @endif
 
-                                <form action="{{ route('admin.capsules.destroy', ['capsule' => $capsule['filename']]) }}" method="POST" class="mt-5 flex justify-end"
-                                      onsubmit="return confirm('Delete this capsule and its embedded metadata?');">
+                                <form action="{{ route('admin.capsules.destroy', ['capsule' => $capsule['id']]) }}" method="POST" class="mt-5 flex justify-end"
+                                      onsubmit="return confirm('Delete this leak and its associated file?');">
                                     @csrf
                                     @method('DELETE')
                                     <button type="submit" class="thread-danger">
-                                        Delete capsule
+                                        Delete leak
                                     </button>
                                 </form>
                             </div>

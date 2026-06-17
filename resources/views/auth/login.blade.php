@@ -16,7 +16,7 @@
                     <span></span>
                     <span></span>
                 </div>
-                <p class="thread-kicker mt-5">DuckDB capsule access</p>
+                <p class="thread-kicker mt-5">Leak database access</p>
                 <h1 class="mt-2 text-3xl font-bold text-white sm:text-4xl">Thin Thread</h1>
                 <p class="mt-2 text-sm thread-muted">Authenticated workspace</p>
             </header>

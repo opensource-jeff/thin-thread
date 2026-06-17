@@ -2,17 +2,15 @@
 
 namespace App\Http\Controllers;
 
-use App\Support\DuckDB;
-use App\Jobs\CreateOsintCapsule;
+use App\Models\Leak;
+use App\Jobs\IngestLeakFile;
 use App\Models\User;
 use App\Support\CapsuleRetentionPolicy;
+use App\Support\QGrep;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Process;
 use Illuminate\Validation\Rule;
-use JsonException;
-use SplFileInfo;
 
 class AdminController extends Controller
 {
@@ -22,7 +20,7 @@ class AdminController extends Controller
     public function index()
     {
         return view('admin', [
-            'capsules' => $this->capsules(),
+            'capsules' => $this->leaks(),
             'retentionPolicies' => CapsuleRetentionPolicy::options(),
             'users' => User::query()
                 ->orderByDesc('is_admin')
@@ -55,7 +53,9 @@ class AdminController extends Controller
             // Stream the file upload to prevent memory exhaustion
             $file = $request->file('uploaded_file');
             $fileName = uniqid('ingest_', true).'.txt';
-            $targetPath = storage_path('app/osint_capsules/'.$fileName);
+            $leakDir = QGrep::storagePath();
+            File::ensureDirectoryExists($leakDir);
+            $targetPath = $leakDir.'/'.$fileName;
 
             $source = fopen($file->getRealPath(), 'rb');
             $destination = fopen($targetPath, 'wb');
@@ -72,7 +72,7 @@ class AdminController extends Controller
             }
         }
 
-        CreateOsintCapsule::dispatch(
+        IngestLeakFile::dispatch(
             $filePath,
             $validated['display_name'],
             $validated['leak_date'],
@@ -84,27 +84,47 @@ class AdminController extends Controller
     }
 
     /**
-     * Delete a DuckDB capsule and local files tied to the same capsule UUID.
+     * Delete a leak record and its associated text file.
      */
-    public function destroyCapsule(Request $request, string $capsule)
+    public function destroyCapsule(Request $request, string $id)
     {
-        $path = $this->resolveCapsulePath($capsule);
+        $leak = Leak::find($id);
 
-        if ($path === null) {
+        if ($leak === null) {
             return back()->withErrors([
-                'capsule' => 'The selected capsule could not be found.',
+                'capsule' => 'The selected leak could not be found.',
             ]);
         }
 
-        $deletedFiles = $this->deleteCapsuleFiles($path);
+        $path = $leak->file_path;
+        $displayName = $leak->display_name;
 
-        Log::warning('DuckDB capsule deleted by admin.', [
-            'capsule' => basename($path),
-            'deleted_files' => $deletedFiles,
+        if (File::exists($path)) {
+            File::delete($path);
+        }
+
+        $leak->delete();
+
+        // Trigger qgrep re-indexing
+        $this->updateQGrepIndex();
+
+        Log::warning('Leak deleted by admin.', [
+            'display_name' => $displayName,
+            'file' => basename($path),
             'admin_id' => $request->user()?->id,
         ]);
 
-        return back()->with('status', 'Deleted capsule '.basename($path).' and its associated local metadata files.');
+        return back()->with('status', "Deleted leak '{$displayName}' and its associated file.");
+    }
+
+    private function updateQGrepIndex(): void
+    {
+        $indexDir = QGrep::indexPath();
+        File::ensureDirectoryExists($indexDir);
+        $indexFile = "{$indexDir}/leaks.qf";
+
+        QGrep::process(300)
+            ->run([QGrep::binary(), 'index', $indexFile, QGrep::storagePath()]);
     }
 
     /**
@@ -192,128 +212,28 @@ class AdminController extends Controller
     /**
      * @return list<array<string, mixed>>
      */
-    private function capsules(): array
+    private function leaks(): array
     {
-        $capsuleDir = storage_path('app/osint_capsules');
-        File::ensureDirectoryExists($capsuleDir);
+        $leaks = Leak::query()->orderByDesc('ingested_at')->get();
 
-        $capsules = [];
-
-        foreach (File::files($capsuleDir) as $file) {
-            if ($file->getExtension() !== 'db') {
-                continue;
-            }
-
-            $metadata = $this->readCapsuleMetadata($file);
-
-            $capsules[] = [
-                'filename' => $file->getFilename(),
-                'modified_at' => date('Y-m-d H:i:s', $file->getMTime()),
-                'size' => $this->humanFileSize($file->getSize()),
-                'metadata' => $metadata,
+        return $leaks->map(function ($leak) {
+            return [
+                'id' => $leak->id,
+                'filename' => basename($leak->file_path),
+                'modified_at' => $leak->ingested_at->format('Y-m-d H:i:s'),
+                'size' => File::exists($leak->file_path) ? $this->humanFileSize(File::size($leak->file_path)) : '0 B',
+                'metadata' => [
+                    'display_name' => $leak->display_name,
+                    'leak_date' => $leak->leak_date->format('Y-m-d'),
+                    'data_format' => $leak->data_format,
+                    'retention_policy' => $leak->retention_policy,
+                    'retention_label' => $leak->retention_label,
+                    'retention_expires_at' => $leak->retention_expires_at?->format('Y-m-d H:i:s'),
+                    'ingested_at' => $leak->ingested_at->format('Y-m-d H:i:s'),
+                    'total_lines' => $leak->total_lines,
+                ],
             ];
-        }
-
-        usort($capsules, fn ($left, $right) => strcmp($right['modified_at'], $left['modified_at']));
-
-        return $capsules;
-    }
-
-    /**
-     * @return array<string, mixed>|null
-     */
-    private function readCapsuleMetadata(SplFileInfo $file): ?array
-    {
-        $preamble = DuckDB::preamble();
-        $sql = <<<SQL
-{$preamble}
-SELECT
-    display_name,
-    CAST(leak_date AS VARCHAR) AS leak_date,
-    data_format,
-    retention_policy,
-    retention_label,
-    CAST(retention_expires_at AS VARCHAR) AS retention_expires_at,
-    CAST(ingested_at AS VARCHAR) AS ingested_at,
-    total_lines
-FROM meta
-LIMIT 1;
-SQL;
-
-        $result = DuckDB::process(10)
-            ->run([DuckDB::binary(), '-json', '-readonly', $file->getPathname(), '-c', $sql]);
-
-        if (! $result->successful()) {
-            Log::error("DuckDB Metadata Read Failed for {$file->getFilename()}: " . $result->errorOutput());
-            return null;
-        }
-
-        try {
-            $rows = json_decode($result->output(), true, 512, JSON_THROW_ON_ERROR);
-        } catch (JsonException) {
-            return null;
-        }
-
-        return $rows[0] ?? null;
-    }
-
-    private function resolveCapsulePath(string $capsule): ?string
-    {
-        if (basename($capsule) !== $capsule || ! str_ends_with($capsule, '.db')) {
-            return null;
-        }
-
-        $capsuleDir = storage_path('app/osint_capsules');
-        File::ensureDirectoryExists($capsuleDir);
-
-        $realDir = realpath($capsuleDir);
-        $realPath = realpath($capsuleDir.DIRECTORY_SEPARATOR.$capsule);
-
-        if ($realDir === false || $realPath === false) {
-            return null;
-        }
-
-        if (! str_starts_with($realPath, $realDir.DIRECTORY_SEPARATOR)) {
-            return null;
-        }
-
-        if (pathinfo($realPath, PATHINFO_EXTENSION) !== 'db') {
-            return null;
-        }
-
-        return $realPath;
-    }
-
-    /**
-     * @return list<string>
-     */
-    private function deleteCapsuleFiles(string $capsulePath): array
-    {
-        $capsuleDir = dirname($capsulePath);
-        $filename = basename($capsulePath);
-        $uuid = preg_replace('/^capsule_(.+)\.db$/', '$1', $filename);
-
-        $candidatePaths = [
-            $capsulePath,
-            $capsulePath.'.wal',
-            $capsulePath.'.tmp',
-        ];
-
-        if ($uuid !== $filename) {
-            $candidatePaths[] = $capsuleDir.DIRECTORY_SEPARATOR."ingest_{$uuid}.sql";
-            $candidatePaths[] = $capsuleDir.DIRECTORY_SEPARATOR."ingest_{$uuid}.csv";
-        }
-
-        $deletedFiles = [];
-
-        foreach ($candidatePaths as $candidatePath) {
-            if (File::exists($candidatePath)) {
-                File::delete($candidatePath);
-                $deletedFiles[] = basename($candidatePath);
-            }
-        }
-
-        return $deletedFiles;
+        })->toArray();
     }
 
     private function humanFileSize(int $bytes): string
@@ -332,4 +252,3 @@ SQL;
             : number_format($size, 1).' '.$units[$unit];
     }
 }
-

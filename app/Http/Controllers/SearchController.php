@@ -2,11 +2,11 @@
 
 namespace App\Http\Controllers;
 
-use App\Support\DuckDB;
+use App\Models\Leak;
+use App\Support\QGrep;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Process;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class SearchController extends Controller
@@ -20,7 +20,7 @@ class SearchController extends Controller
     }
 
     /**
-     * Stream search results from all DuckDB capsules.
+     * Stream search results from qgrep.
      */
     public function stream(Request $request)
     {
@@ -35,88 +35,69 @@ class SearchController extends Controller
 
         $normalizedQuery = mb_strtolower($query, 'UTF-8');
 
-        $capsuleDir = storage_path('app/osint_capsules');
-        if (! File::exists($capsuleDir)) {
-            File::makeDirectory($capsuleDir, 0775, true);
+        $indexDir = QGrep::indexPath();
+        $indexFile = "{$indexDir}/leaks.qf";
+
+        if (! File::exists($indexFile)) {
+            Log::warning("Search failed: qgrep index not found at {$indexFile}");
+            return response()->stream(function () {
+                echo "event: done\ndata: index not ready\n\n";
+            }, 200, ['Content-Type' => 'text/event-stream']);
         }
 
-        $capsules = File::files($capsuleDir);
-        $dbFiles = array_filter($capsules, fn ($file) => $file->getExtension() === 'db');
+        Log::info("Search started: '{$query}' via qgrep.");
 
-        Log::info("Search started: '{$query}' across ".count($dbFiles).' capsules.');
+        return new StreamedResponse(function () use ($indexFile, $normalizedQuery) {
+            // We use a regular expression for qgrep. We need to escape special characters if they are not intended for regex.
+            // For OSINT, usually users want literal matches of emails/domains.
+            $escapedQuery = preg_quote($normalizedQuery, '/');
 
-        $searchSql = $this->buildSearchSql($normalizedQuery);
-        $fallbackSql = $this->buildExactSearchSql($normalizedQuery);
+            $process = QGrep::process(60)
+                ->start([QGrep::binary(), 'search', $indexFile, $escapedQuery]);
 
-        return new StreamedResponse(function () use ($dbFiles, $searchSql, $fallbackSql) {
-            foreach ($dbFiles as $dbFile) {
-                try {
-                    $path = $dbFile->getRealPath();
-                    $filename = basename($path);
+            $output = method_exists($process, 'getOutputIterator')
+                ? $process->getOutputIterator()
+                : explode("\n", $process->wait()->output());
 
-                    echo "event: ping\ndata: ".json_encode(['capsule' => $filename])."\n\n";
-                    if (ob_get_level() > 0) {
-                        ob_flush();
-                    }
-                    flush();
+            foreach ($output as $line) {
+                if (trim($line) === '') continue;
 
-                    // 1. Fetch Metadata First
-                    $metaSql = DuckDB::preamble().' SELECT display_name, CAST(leak_date AS VARCHAR) as info1, CAST(total_lines AS VARCHAR) as info2 FROM meta LIMIT 1';
-                    $metaProcess = DuckDB::process(10)
-                        ->run([DuckDB::binary(), '-json', '-readonly', $path, '-c', $metaSql]);
+                // qgrep output: "path:text"
+                $parts = explode(':', $line, 2);
+                if (count($parts) < 2) continue;
 
-                    $meta = null;
-                    if ($metaProcess->successful()) {
-                        $metaOutput = json_decode($metaProcess->output(), true);
-                        if (! empty($metaOutput[0])) {
-                            $meta = [
-                                'display_name' => $metaOutput[0]['display_name'],
-                                'leak_date' => $metaOutput[0]['info1'],
-                                'total_lines' => $metaOutput[0]['info2'],
-                                'capsule' => $filename,
-                            ];
-                            echo "event: meta\ndata: ".json_encode($meta)."\n\n";
-                            if (ob_get_level() > 0) {
-                                ob_flush();
-                            }
-                            flush();
-                        }
-                    }
+                $fullPath = trim($parts[0]);
+                $text = trim($parts[1]);
 
-                    // 2. Stream Hits Individually
-                    $process = DuckDB::process(60)
-                        ->run([DuckDB::binary(), '-json', '-readonly', $path, '-c', $searchSql]);
-
-                    if (! $process->successful() && $searchSql !== $fallbackSql) {
-                        Log::warning("DuckDB FTS Search Failed on {$filename}; falling back to exact scan: ".$process->errorOutput());
-
-                        $process = DuckDB::process(60)
-                            ->run([DuckDB::binary(), '-json', '-readonly', $path, '-c', $fallbackSql]);
-                    }
-
-                    if ($process->successful()) {
-                        $output = json_decode($process->output(), true);
-                        if ($output) {
-                            foreach ($output as $row) {
-                                $hit = preg_replace('/[[:cntrl:]]/', '', $row['raw_text']);
-                                echo "event: hit\ndata: ".json_encode([
-                                    'capsule' => $filename,
-                                    'text' => $hit,
-                                ], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE)."\n\n";
-
-                                if (ob_get_level() > 0) {
-                                    ob_flush();
-                                }
-                                flush();
-                            }
-                        }
+                if (!isset($metadataCache[$fullPath])) {
+                    $leak = Leak::where('file_path', $fullPath)->first();
+                    if ($leak) {
+                        $metadataCache[$fullPath] = [
+                            'display_name' => $leak->display_name,
+                            'leak_date' => $leak->leak_date->format('Y-m-d'),
+                            'total_lines' => (string) $leak->total_lines,
+                            'capsule' => basename($fullPath),
+                        ];
+                        echo "event: meta\ndata: ".json_encode($metadataCache[$fullPath])."\n\n";
                     } else {
-                        Log::error("DuckDB Search Failed on {$filename}: ".$process->errorOutput());
+                        $metadataCache[$fullPath] = false;
                     }
-                } catch (\Exception $e) {
-                    Log::error("Search interrupted on capsule {$filename}: " . $e->getMessage());
                 }
+
+                if ($metadataCache[$fullPath]) {
+                    $hit = preg_replace('/[[:cntrl:]]/', '', $text);
+                    echo "event: hit\ndata: ".json_encode([
+                        'capsule' => basename($fullPath),
+                        'text' => $hit,
+                    ], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE)."\n\n";
+                }
+
+                if (ob_get_level() > 0) {
+                    ob_flush();
+                }
+                flush();
             }
+
             echo "event: done\ndata: end\n\n";
             if (ob_get_level() > 0) {
                 ob_flush();
@@ -126,93 +107,7 @@ class SearchController extends Controller
             'Content-Type' => 'text/event-stream',
             'Cache-Control' => 'no-cache',
             'Connection' => 'keep-alive',
-            'X-Accel-Buffering' => 'no', // Disable buffering for Nginx
+            'X-Accel-Buffering' => 'no',
         ]);
     }
-
-    private function buildSearchSql(string $normalizedQuery): string
-    {
-        if ($this->requiresLiteralMatch($normalizedQuery)) {
-            return $this->buildExactSearchSql($normalizedQuery);
-        }
-
-        $tokens = $this->searchTokens($normalizedQuery);
-        if ($tokens === []) {
-            return $this->buildExactSearchSql($normalizedQuery);
-        }
-
-        $ftsQuery = $this->sqlString(implode(' ', $tokens));
-        $filters = $this->tokenFilters($tokens);
-        $where = implode(' AND ', array_merge(['score IS NOT NULL'], $filters));
-        $preamble = DuckDB::preamble();
-
-        return <<<SQL
-{$preamble}
-LOAD fts;
-SELECT raw_text FROM (
-    SELECT raw_text, fts_main_raw_data.match_bm25(raw_text, {$ftsQuery}) AS score
-    FROM raw_data
-) WHERE {$where}
-ORDER BY score DESC
-LIMIT 25;
-SQL;
-    }
-
-    private function buildExactSearchSql(string $normalizedQuery): string
-    {
-        if ($this->requiresLiteralMatch($normalizedQuery)) {
-            $where = 'contains(raw_text, '.$this->sqlString($normalizedQuery).')';
-        } else {
-            $tokens = $this->searchTokens($normalizedQuery);
-            $filters = $this->tokenFilters($tokens);
-            $where = $filters === []
-                ? 'contains(raw_text, '.$this->sqlString($normalizedQuery).')'
-                : implode(' AND ', $filters);
-        }
-
-        $preamble = DuckDB::preamble();
-
-        return <<<SQL
-{$preamble}
-SELECT raw_text
-FROM raw_data
-WHERE {$where}
-LIMIT 25;
-SQL;
-    }
-
-    /**
-     * @return list<string>
-     */
-    private function searchTokens(string $query): array
-    {
-        if (preg_match_all('/[\p{L}\p{N}]+/u', $query, $matches) === false) {
-            return [];
-        }
-
-        return array_values(array_unique(array_filter($matches[0], fn ($token) => $token !== '')));
-    }
-
-    /**
-     * @param  list<string>  $tokens
-     * @return list<string>
-     */
-    private function tokenFilters(array $tokens): array
-    {
-        return array_map(
-            fn ($token) => 'contains(raw_text, '.$this->sqlString($token).')',
-            $tokens
-        );
-    }
-
-    private function requiresLiteralMatch(string $query): bool
-    {
-        return preg_match('/[^\p{L}\p{N}\s]/u', $query) === 1;
-    }
-
-    private function sqlString(string $value): string
-    {
-        return "'".str_replace("'", "''", $value)."'";
-    }
 }
-

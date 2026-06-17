@@ -22,7 +22,6 @@ Route::middleware(['auth', 'admin'])->group(function () {
     Route::get('/admin', [AdminController::class, 'index'])->name('admin.index');
     Route::post('/admin/ingest', [AdminController::class, 'ingest'])->name('admin.ingest');
     Route::delete('/admin/capsules/{capsule}', [AdminController::class, 'destroyCapsule'])
-        ->where('capsule', '[^/]+\.db')
         ->name('admin.capsules.destroy');
     Route::post('/admin/users', [AdminController::class, 'storeUser'])->name('admin.users.store');
     Route::put('/admin/users/{user}', [AdminController::class, 'updateUser'])->name('admin.users.update');

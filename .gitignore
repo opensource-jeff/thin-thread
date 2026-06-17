@@ -20,7 +20,8 @@
 /public/storage
 /storage/*.key
 /storage/pail
-/storage/app/osint_capsules
+/storage/app/osint_leaks
+/storage/app/qgrep_index
 /vendor
 _ide_helper.php
 Homestead.json

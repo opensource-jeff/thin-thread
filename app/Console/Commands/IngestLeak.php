@@ -2,7 +2,7 @@
 
 namespace App\Console\Commands;
 
-use App\Jobs\CreateOsintCapsule;
+use App\Jobs\IngestLeakFile;
 use App\Support\CapsuleRetentionPolicy;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Validator;
@@ -62,7 +62,7 @@ class IngestLeak extends Command
             return 1;
         }
 
-        CreateOsintCapsule::dispatch($path, $name, $date, $format, $retention);
+        IngestLeakFile::dispatch($path, $name, $date, $format, $retention);
 
         $this->info("Successfully dispatched ingestion job for: {$name}");
         $this->info('Retention: '.CapsuleRetentionPolicy::retentionDescription($retention));
